@@ -2,6 +2,7 @@ interface Position {
     x: number,
     y: number,
 }
+
 interface Tile extends Position {
 
     recycler: boolean,
@@ -10,7 +11,7 @@ interface Tile extends Position {
     canBuild: boolean,
     canSpawn: boolean,
     scrapAmount: number
-};
+}
 type CompareItem = {
     index: number,
     val: number
@@ -19,6 +20,16 @@ var inputs: string[] = readline().split(' ');
 const width: number = parseInt(inputs[0]);
 const height: number = parseInt(inputs[1]);
 
+export const rotate = (origin: Position, rotateAnchor: Position, angle: number): Position => {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const dx = origin.x - rotateAnchor.x;
+    const dy = origin.y - rotateAnchor.y;
+    return {
+        x: dx * cos + dy * sin + rotateAnchor.x,
+        y: -dx * sin + dy * cos + rotateAnchor.y
+    }
+}
 const removeItemInArray = <T>(current: T[], item: T): T[] => {
     return current.filter(i => i !== item);
 };
@@ -88,14 +99,25 @@ const message = (text: string): string => {
     return `MESSAGE ${text}`;
 }
 let turn: number = 0;
-let firstOppTile: Tile;
-let firstMyTile: Tile;
+const defaultTile = {
+    canBuild: false,
+    canSpawn: false,
+    inRangeOfRecycler: false,
+    recycler: false,
+    scrapAmount: 0,
+    units: 0,
+    x: 0,
+    y: 0
+}
+let startingOppTile: Tile = defaultTile;
+let startingMyTile: Tile = defaultTile;
+let avoidPoint = { x: 0, y: 0 }
 let messageToShow = "GG & HF !";
 const getPositionInGrid = <T extends Position>(x: number, y: number, grid: T[]): T | undefined => {
     return grid.find(tile => tile.x === x && tile.y === y);
 }
 const canTravel = <T extends Position>(from: Position, dest: Position, grid: T[], visited: Position[] = [], distance: number = 0): number => {
-    if (distance > 10) return 0;
+    if (distance > 30) return 0;
     const directions = [
         getPositionInGrid(from.x + 1, from.y, grid), // right
         getPositionInGrid(from.x - 1, from.y, grid), // left
@@ -151,9 +173,7 @@ while (true) {
                 continue;
             }
             if (owner === -1) {
-                if (isGrass) {
-                    continue;
-                } else {
+                if (!isGrass) {
                     neuTiles.push(tile);
                 }
 
@@ -163,13 +183,15 @@ while (true) {
     let myUnits = myTiles.filter(tile => tile.units > 0);
 
     if (turn === 0) {
-        firstMyTile = myTiles.filter(tile => tile.units === 0).at(0);
+        startingMyTile = myTiles.filter(tile => tile.units === 0).at(0);
     }
     const oppUnits = oppTiles.filter(tile => tile.units > 0);
     if (turn === 0) {
-        firstOppTile = oppTiles.filter(tile => tile.units === 0).at(0);
+        startingOppTile = oppTiles.filter(tile => tile.units === 0).at(0);
+        avoidPoint = rotate(startingOppTile, startingMyTile, Math.PI)
     }
-    myUnits = myUnits.sort((a, b) => distance(a, firstOppTile) - distance(b, firstOppTile));
+
+    myUnits = myUnits.sort((a, b) => distance(a, startingOppTile) - distance(b, startingOppTile));
     const oppTilesWithoutBuild = oppTiles.filter(tile => !tile.recycler);
     const myTilesWithoutBuild = myTiles.filter(tile => !tile.recycler);
     let mySpawnCandidates = myTiles.filter(tile => tile.canSpawn && (tile.inRangeOfRecycler ? tile.scrapAmount > 1 : true));
@@ -177,8 +199,8 @@ while (true) {
     const capturableTiles = [...neuTiles, ...oppTilesWithoutBuild];
     const moveableTiles = [...capturableTiles, ...myTilesWithoutBuild];
     const actions: string[] = [];
-    // build 
-    if (turn < (width + height) / 4 && turn % 3 === 0) {
+    // build
+    if (capturableTiles.length > 60 && turn < (width + height) / 4 && turn % 3 === 2) {
         const choose = [...myBuildCandidates.map((c) => {
             const asides = inRange(c, [...neuTiles, ...myTilesWithoutBuild], (d) => d === 1);
             return { ...c, scrapAmount: c.scrapAmount + asides.reduce((prev, curr) => prev + curr.scrapAmount, 0) }
@@ -198,8 +220,8 @@ while (true) {
 
             } else {
                 // check if is util top protect
-                const isNeccessary = inRange(candidate, myTilesWithoutBuild, (d) => d <= 1);
-                if (isNeccessary.length > 1) {
+                const isNecessary = inRange(candidate, myTilesWithoutBuild, (d) => d <= 1);
+                if (isNecessary.length > 1) {
                     actions.push(build(candidate));
                     mySpawnCandidates = removeItemInArray(mySpawnCandidates, candidate);
                 }
@@ -207,7 +229,6 @@ while (true) {
         }
     })
     // spawn
-    let tempNeuSpawn = mySpawnCandidates.filter((tile) => inRange(tile, capturableTiles, (d) => d <= 1).length > 0 && tile.units === 0);
     const spawner = () => {
         const myTilesInDanger = mySpawnCandidates.filter((tile) => inRange(tile, oppUnits, (d) => d <= 1).length > 0)
         myTilesInDanger.forEach(tile => {
@@ -239,15 +260,18 @@ while (true) {
                 );
             }
         })
-        for (let i = 0; i < Math.floor(myMatter / 10); i++) {
-            const n = nearest({ x: Math.round(width / 2), y: Math.round(height / 2) }, tempNeuSpawn);
-            if (n) {
-                if(firstMyTile.x>width/2 ? n.x <= firstMyTile.x : n.x >= firstMyTile.x ){
-                actions.push(spawn(1, n));
-                tempNeuSpawn = removeItemInArray(tempNeuSpawn, n);
-                    }
+        const nearestOppUnit = nearest(startingMyTile, oppUnits);
+        if (nearestOppUnit) {
+            const nearestMyUnit = nearest(nearestOppUnit, myUnits);
+            if (nearestMyUnit) {
+                if (canTravel(nearestMyUnit, nearestOppUnit, moveableTiles)) {
+                    actions.push(spawn(Math.floor(myMatter / 10), nearestMyUnit));
+                }
+
             }
         }
+
+
 
         const randomEnd = pickRandomOne(mySpawnCandidates);
         if (randomEnd) {
@@ -261,49 +285,48 @@ while (true) {
     spawner();
 
     // move units to their nearest tile
-    let tempNeuTile = neuTiles;
+    let tempNeuTile = [...neuTiles,...oppTilesWithoutBuild];
     myUnits.forEach(unit => {
         // search for neutre tile
-        const inRangeNeuTile = inRange(unit, tempNeuTile, (d) => d <= 1);
-        if (inRangeNeuTile.length) {
+        if(turn>width/3){
+            const inRangeNeuTile = inRange(unit, tempNeuTile, (d) => d <= 1);
+            if (inRangeNeuTile.length) {
 
-            const n = further({x:firstMyTile.x<width/2?0:width,y:firstMyTile.y}, inRangeNeuTile);
-            if (n) {
-                if(firstMyTile.x>width/2 ? n.x <= firstMyTile.x : n.x >= firstMyTile.x ){
+                const n = further(avoidPoint, inRangeNeuTile);
+                if (n) {
                     tempNeuTile = removeItemInArray(tempNeuTile, n);
                     actions.push(move(Math.ceil(unit.units / 2), unit, n));
                 }
-
-            
             }
         }
+
 
         // attack
         const inRangeOppTile = inRange(unit, oppTilesWithoutBuild, (d) => d <= 1);
         if (inRangeOppTile.length) {
             inRangeOppTile.forEach(oppTile => {
-                
-                actions.push(move(oppTile.units + Math.floor(oppMatter/10)+1, unit, oppTile));
+
+                actions.push(move(oppTile.units + Math.floor(oppMatter / 10) + 1, unit, oppTile));
             })
             return
         }
-                //renfort
-                const inRangeMyUnits = inRange(unit, myUnits, (d) => d === 1);
-                if (inRangeMyUnits.length) {
-                    let find = false;
-                    inRangeMyUnits.forEach(canRenfort => {
-                        const oppWillAttack = inRange(canRenfort, oppUnits, (d) => d === 1);
-                        if (oppWillAttack.length) {
-                            find = true;
-                            actions.push(
-                                move(
-                                    unit.units, unit, canRenfort
-                                )
-                            );
-                        }
-                    })
-                    if (find) return;
+        //renfort
+        const inRangeMyUnits = inRange(unit, myUnits, (d) => d === 1);
+        if (inRangeMyUnits.length) {
+            let find = false;
+            inRangeMyUnits.forEach(canRenfort => {
+                const oppWillAttack = inRange(canRenfort, oppUnits, (d) => d === 1);
+                if (oppWillAttack.length) {
+                    find = true;
+                    actions.push(
+                        move(
+                            unit.units, unit, canRenfort
+                        )
+                    );
                 }
+            })
+            if (find) return;
+        }
         const nearestOppTile = nearest(unit, oppTilesWithoutBuild);
         if (nearestOppTile) {
 
@@ -323,12 +346,12 @@ while (true) {
             return
         }
 
-            actions.push(
-                move(
-                    unit.units, unit, nearestTile
-                )
-            );
-        
+        actions.push(
+            move(
+                unit.units, unit, nearestTile
+            )
+        );
+
     })
     actions.push(message(messageToShow));
 
