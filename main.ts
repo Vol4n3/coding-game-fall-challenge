@@ -10,7 +10,8 @@ interface Tile extends Position {
     units: number,
     canBuild: boolean,
     canSpawn: boolean,
-    scrapAmount: number
+    scrapAmount: number,
+    unitsComing: number
 }
 type CompareItem = {
     index: number,
@@ -45,7 +46,7 @@ const samePosition = (p1: Position, p2: Position): boolean => {
 const distance = (p1: Position, p2: Position): number => {
     const dx = p1.x - p2.x;
     const dy = p1.y - p2.y;
-    return Math.sqrt(dx * dx + dy * dy);
+    return Math.round(Math.sqrt(dx * dx + dy * dy) * 100) / 100;
 }
 const average = (nums: number[]): number => {
     return nums.reduce((p, c) => p + c) / nums.length;
@@ -75,31 +76,9 @@ const inRange = <T extends Position>(which: Position, others: T[], compareFuncti
     return calcDist.filter(tile => compareFunction(tile.dist)).map(tile => others[tile.index]);
 }
 
-const move = (
-    amount: number,
-    from: Position,
-    to: Position
-): string => {
-    return `MOVE ${amount} ${from.x} ${from.y} ${to.x} ${to.y}`;
-}
-
-const build = (p: Position): string => {
-    return `BUILD ${p.x} ${p.y}`;
-}
-
-const spawn = (amount: number, p: Position): string => {
-    return `SPAWN ${amount} ${p.x} ${p.y}`;
-}
-
-const wait = (): string => {
-    return 'WAIT';
-}
-
-const message = (text: string): string => {
-    return `MESSAGE ${text}`;
-}
 let turn: number = 0;
-const defaultTile = {
+
+const defaultTile: Tile = {
     canBuild: false,
     canSpawn: false,
     inRangeOfRecycler: false,
@@ -107,7 +86,8 @@ const defaultTile = {
     scrapAmount: 0,
     units: 0,
     x: 0,
-    y: 0
+    y: 0,
+    unitsComing: 0
 }
 let startingOppTile: Tile = defaultTile;
 let startingMyTile: Tile = defaultTile;
@@ -116,8 +96,8 @@ let messageToShow = "GG & HF !";
 const getPositionInGrid = <T extends Position>(x: number, y: number, grid: T[]): T | undefined => {
     return grid.find(tile => tile.x === x && tile.y === y);
 }
-const canTravel = <T extends Position>(from: Position, dest: Position, grid: T[], visited: Position[] = [], distance: number = 0): number => {
-    if (distance > 30) return 0;
+const canTravel = <T extends Position>(from: Position, dest: Position, grid: T[], maxDistance: number = 50, visited: Position[] = [], distance: number = 0): number => {
+    if (distance > maxDistance) return 0;
     const directions = [
         getPositionInGrid(from.x + 1, from.y, grid), // right
         getPositionInGrid(from.x - 1, from.y, grid), // left
@@ -128,15 +108,35 @@ const canTravel = <T extends Position>(from: Position, dest: Position, grid: T[]
     if (find) return distance;
     if (visited.some(buff => samePosition(buff, from))) return 0;
     visited.push(from);
-    const calculs: number[] = directions.map(tile => tile ? canTravel(tile, dest, grid, visited, distance + 1) : 0);
+    const calculs: number[] = directions.map(tile => tile ? canTravel(tile, dest, grid, maxDistance, visited, distance + 1) : 0);
     return Math.max(...calculs);
+}
+const tileWillBeGrass = (tile: Tile): boolean => {
+    return tile.inRangeOfRecycler && tile.scrapAmount <= 1;
 }
 // game loop
 while (true) {
 
     var inputs: string[] = readline().split(' ');
-    let myMatter: number = parseInt(inputs[0]);
+    const myMatter: number = parseInt(inputs[0]);
+
+    let myMatterLeft: number = myMatter;
+    const spawnUnitsLeft = (): number => {
+        return Math.floor(myMatterLeft / 10);
+    }
+    const buildRecyclerLeft = (): number => {
+        return Math.floor(myMatterLeft / 5);
+    }
+    const buyUnits = (n: number): void => {
+        const amount = myMatterLeft - 10 * n
+        myMatterLeft = amount < 0 ? 0 : amount;
+    }
+    const buyRecycler = (n: number): void => {
+        const amount = myMatterLeft - 5 * n
+        myMatterLeft = amount < 0 ? 0 : amount;
+    }
     const oppMatter: number = parseInt(inputs[1]);
+    const oppCanSpawnAmount = Math.floor(oppMatter / 10);
     const myTiles: Tile[] = [];
     const oppTiles: Tile[] = [];
     let neuTiles: Tile[] = [];
@@ -150,7 +150,6 @@ while (true) {
             const canBuild: number = parseInt(inputs[4]);
             const canSpawn: number = parseInt(inputs[5]);
             const inRangeOfRecycler: number = parseInt(inputs[6]);
-            const isGrass = scrapAmount < 1;
             const tile: Tile = {
                 x: j,
                 y: i,
@@ -159,9 +158,10 @@ while (true) {
                 units,
                 canBuild: canBuild > 0,
                 canSpawn: canSpawn > 0,
-                scrapAmount
+                scrapAmount,
+                unitsComing: 0
             };
-            if (inRangeOfRecycler && scrapAmount <= 1) { //will be grass
+            if (scrapAmount < 1) { //be or will be grass
                 continue;
             }
             if (owner === 1) {
@@ -172,11 +172,8 @@ while (true) {
                 oppTiles.push(tile);
                 continue;
             }
-            if (owner === -1) {
-                if (!isGrass) {
-                    neuTiles.push(tile);
-                }
-
+            if (owner === -1 && !tileWillBeGrass(tile)) {
+                neuTiles.push(tile);
             }
         }
     }
@@ -188,17 +185,53 @@ while (true) {
     const oppUnits = oppTiles.filter(tile => tile.units > 0);
     if (turn === 0) {
         startingOppTile = oppTiles.filter(tile => tile.units === 0).at(0);
-        avoidPoint = rotate(startingOppTile, startingMyTile, Math.PI)
+        avoidPoint = {
+            x: startingMyTile.x > width / 2 ? startingMyTile.x + 2 : startingMyTile.x - 2,
+            y: startingMyTile.y > height / 2 ? startingMyTile.y + 1 : startingMyTile.y - 1
+        }
     }
 
-    myUnits = myUnits.sort((a, b) => distance(a, startingOppTile) - distance(b, startingOppTile));
-    const oppTilesWithoutBuild = oppTiles.filter(tile => !tile.recycler);
-    const myTilesWithoutBuild = myTiles.filter(tile => !tile.recycler);
-    let mySpawnCandidates = myTiles.filter(tile => tile.canSpawn && (tile.inRangeOfRecycler ? tile.scrapAmount > 1 : true));
-    const myBuildCandidates = myTiles.filter(tile => tile.canBuild);
+    myUnits = myUnits.sort((a, b) => distance(b, startingOppTile) - distance(a, startingOppTile));
+    const oppTilesWithoutBuild = oppTiles.filter(tile => !tile.recycler && !tileWillBeGrass(tile));
+    let myTilesWithoutBuild = myTiles.filter(tile => !tile.recycler && !tileWillBeGrass(tile));
+    let mySpawnCandidates = myTiles.filter(tile => tile.canSpawn && !tileWillBeGrass(tile))
+        .sort((a, b) => distance(a, startingOppTile) - distance(b, startingOppTile));;
+    let myBuildCandidates = myTiles.filter(tile => tile.canBuild && !tileWillBeGrass(tile) && tile.units === 0);
     const capturableTiles = [...neuTiles, ...oppTilesWithoutBuild];
     const moveableTiles = [...capturableTiles, ...myTilesWithoutBuild];
     const actions: string[] = [];
+    const actionMove = (
+        amount: number,
+        from: Position,
+        to: Position
+    ) => {
+        if (amount <= 0) {
+            return
+        }
+        actions.push(`MOVE ${amount} ${from.x} ${from.y} ${to.x} ${to.y}`);
+    }
+
+    const actionBuild = (p: Position) => {
+        if (buildRecyclerLeft() <= 0) {
+            return
+        }
+        buyRecycler(1);
+        actions.push(`BUILD ${p.x} ${p.y}`);
+    }
+
+    const actionSpawn = (amount: number, p: Position) => {
+        if (spawnUnitsLeft() <= 0 || amount <= 0) {
+            return
+        }
+        const minimum = Math.min(amount, spawnUnitsLeft());
+        buyUnits(minimum);
+        actions.push(`SPAWN ${minimum} ${p.x} ${p.y}`);
+    }
+
+    const actionMessage = (text: string) => {
+        actions.push(`MESSAGE ${text}`);
+    }
+
     // build
     if (capturableTiles.length > 60 && turn < (width + height) / 4 && turn % 3 === 2) {
         const choose = [...myBuildCandidates.map((c) => {
@@ -206,7 +239,7 @@ while (true) {
             return { ...c, scrapAmount: c.scrapAmount + asides.reduce((prev, curr) => prev + curr.scrapAmount, 0) }
         })].sort((a, b) => b.scrapAmount - a.scrapAmount).at(0);
         if (choose) {
-            actions.push(build(choose));
+            actionBuild(choose);
             mySpawnCandidates = removeItemInArray(mySpawnCandidates, choose);
         }
 
@@ -216,13 +249,13 @@ while (true) {
         const nearestUnitWillInvade = inRange(candidate, oppUnits, (d) => d <= 1);
         if (nearestUnitWillInvade.length) {
             if (myMatter > 20 && nearestUnitWillInvade.reduce((prev, curr) => prev + curr.units, 0) === 1) {
-                actions.push(spawn(1, candidate));
+                actionSpawn(1, candidate);
 
             } else {
                 // check if is util top protect
                 const isNecessary = inRange(candidate, myTilesWithoutBuild, (d) => d <= 1);
                 if (isNecessary.length > 1) {
-                    actions.push(build(candidate));
+                    actionBuild(candidate);
                     mySpawnCandidates = removeItemInArray(mySpawnCandidates, candidate);
                 }
             }
@@ -238,11 +271,11 @@ while (true) {
             }
             const count = Math.floor(myMatter / 10);
 
-            actions.push(
-                spawn(
+
+                actionSpawn(
                     nearestOpp + 1 > count ? count : nearestOpp + 1, tile
                 )
-            );
+
         })
         const myTilesPotentialInDanger = mySpawnCandidates.filter((tile) => inRange(tile, oppTilesWithoutBuild, (d) => d <= 2).length > 0)
 
@@ -253,11 +286,9 @@ while (true) {
             }
             const distanceTravel = canTravel(tile, nearestOpp, moveableTiles);
             if (distanceTravel > 0 && distanceTravel <= 2) {
-                actions.push(
-                    spawn(
+                actionSpawn(
                         nearestOpp.units + Math.floor(myMatter / 10), tile
                     )
-                );
             }
         })
         const nearestOppUnit = nearest(startingMyTile, oppUnits);
@@ -265,7 +296,7 @@ while (true) {
             const nearestMyUnit = nearest(nearestOppUnit, myUnits);
             if (nearestMyUnit) {
                 if (canTravel(nearestMyUnit, nearestOppUnit, moveableTiles)) {
-                    actions.push(spawn(Math.floor(myMatter / 10), nearestMyUnit));
+                    actionSpawn(Math.floor(myMatter / 10), nearestMyUnit);
                 }
 
             }
@@ -275,11 +306,11 @@ while (true) {
 
         const randomEnd = pickRandomOne(mySpawnCandidates);
         if (randomEnd) {
-            actions.push(spawn(1, randomEnd));
+            actionSpawn(1, randomEnd);
         }
         const randomUnit = pickRandomOne(myUnits);
         if (randomUnit) {
-            actions.push(spawn(1, randomUnit));
+            actionSpawn(1, randomUnit);
         }
     }
     spawner();
@@ -295,7 +326,7 @@ while (true) {
                 const n = further(avoidPoint, inRangeNeuTile);
                 if (n) {
                     tempNeuTile = removeItemInArray(tempNeuTile, n);
-                    actions.push(move(Math.ceil(unit.units / 2), unit, n));
+                    actionMove(Math.ceil(unit.units / 2), unit, n);
                 }
             }
         }
@@ -306,7 +337,7 @@ while (true) {
         if (inRangeOppTile.length) {
             inRangeOppTile.forEach(oppTile => {
 
-                actions.push(move(oppTile.units + Math.floor(oppMatter / 10) + 1, unit, oppTile));
+                actionMove(oppTile.units + Math.floor(oppMatter / 10) + 1, unit, oppTile);
             })
             return
         }
@@ -318,11 +349,10 @@ while (true) {
                 const oppWillAttack = inRange(canRenfort, oppUnits, (d) => d === 1);
                 if (oppWillAttack.length) {
                     find = true;
-                    actions.push(
-                        move(
+                    actionMove(
                             unit.units, unit, canRenfort
                         )
-                    );
+                    ;
                 }
             })
             if (find) return;
@@ -332,11 +362,10 @@ while (true) {
 
             if (canTravel(unit, nearestOppTile, moveableTiles)) {
 
-                actions.push(
-                    move(
+                actionMove(
                         unit.units, unit, nearestOppTile
                     )
-                );
+                ;
                 return
             }
 
@@ -346,17 +375,16 @@ while (true) {
             return
         }
 
-        actions.push(
-            move(
+        actionMove(
                 unit.units, unit, nearestTile
             )
-        );
+        ;
 
     })
-    actions.push(message(messageToShow));
+    actionMessage(messageToShow);
 
     if (!actions.length) {
-        console.log(wait());
+        console.log('WAIT');
         continue;
     }
     console.log(actions.join(';'));
